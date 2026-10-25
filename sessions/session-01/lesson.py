@@ -36,10 +36,10 @@ K_LO, K_HI = 0.0, 5.0       # input range: decay rate k in 1/s
 # every surrogate.
 
 # %%
-def slow_simulation(k, steps=20000):
+def slow_simulation(k, steps=20000, y0=1.0):
     """Fraction left after T_END seconds, by many small Euler steps."""
     dt = T_END / steps
-    y = 1.0
+    y = y0
     for _ in range(steps):
         y = y - k * y * dt
     return y
@@ -47,6 +47,17 @@ def slow_simulation(k, steps=20000):
 
 def exact_answer(k):
     return np.exp(-np.asarray(k, dtype=float) * T_END)
+
+
+def two_input_table(n=18):
+    """Build a lookup table over decay rate k and initial value y0."""
+    k_values = np.linspace(K_LO, K_HI, n)
+    y0_values = np.linspace(0.0, 1.0, n)
+    table = np.array([[slow_simulation(k, y0=y0) for k in k_values] for y0 in y0_values])
+    exact = y0_values[:, None] * exact_answer(k_values)[None, :]
+    error = float(np.max(np.abs(table - exact)))
+    print(f"{n * n} runs for {n} x {n} inputs; worst-case error {error:.6g}")
+    return table
 
 
 # %% [markdown]
