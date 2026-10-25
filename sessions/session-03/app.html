@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session 3: rollout error and mass drift in a toy</title>
+<style>
+  :root { --bg:#ffffff; --fg:#14181f; --muted:#5b6472; --card:#f3f5f8; --accent:#1f6feb; --good:#1a7f37; --bad:#b42318; --line:#d7dce3; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0e1116; --fg:#e6e9ee; --muted:#9aa3b2; --card:#171b22; --accent:#58a6ff; --good:#3fb950; --bad:#f97066; --line:#2a313c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  p.sub { margin: 0 0 12px; color: var(--muted); }
+  .scroll { overflow-x:auto; }
+  canvas { width:100%; min-width:560px; height:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; display:block; }
+  .sr { position:absolute; left:-9999px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
+  button { font:inherit; padding:6px 12px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; cursor:pointer; }
+  button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  button:focus-visible, input:focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+  .row { display:grid; grid-template-columns: 11rem 1fr 6rem; gap:8px; align-items:center; margin:8px 0; }
+  .row output { text-align:right; font-variant-numeric: tabular-nums; }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; gap:2px; } .row output { text-align:left; } }
+  input[type=range] { width:100%; accent-color: var(--accent); }
+  #readout, #challenge, .note { margin-top:10px; padding:10px 12px; background:var(--card); border-radius:8px; border:1px solid var(--line); }
+  #challenge[data-ok="true"] { border-color:var(--good); } #challenge[data-ok="true"] b { color:var(--good); }
+  .note { font-size:.85rem; color:var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Session 3: rollout error and mass drift in a toy</h1>
+  <p class="sub">A surrogate whose step is a little off: watch the error band open up and the mass drift away.</p>
+  <div class="bar" id="graphs" role="group" aria-label="Choose a graph"></div>
+  <div class="scroll"><canvas id="c" width="720" height="420" role="img" aria-label="Session 3: rollout error and mass drift in a toy: interactive plot"></canvas></div>
+  <div class="bar" id="presets" role="group" aria-label="Presets"></div>
+  <div id="controls"></div>
+  <div class="bar"><button id="reset" type="button">Reset</button></div>
+  <div id="readout"></div>
+  <div id="challenge" hidden></div>
+  <div id="status" class="sr" aria-live="polite"></div>
+  <p class="note">This is a simplified educational model. It is not a validated design tool and must not be used for real structures, electrical installations, vehicles, industrial processes or medical decisions.</p>
+  <p class="sub"><a href="https://github.com/KrunalPanchal1995/opensurrogate">Back to the repository</a></p>
+</main>
+<script>
+"use strict";
+const PARAMS = [{"id": "eps", "label": "Relative step error", "min": -5, "max": 5, "step": 0.01, "value": 2, "unit": "percent"}, {"id": "n", "label": "Rollout steps", "min": 10, "max": 200, "step": 10, "value": 60, "unit": "steps"}, {"id": "cons", "label": "Conserved output (1 = on)", "min": 0, "max": 1, "step": 1, "value": 0, "unit": ""}];
+const GRAPHS = [{"id": "loop", "label": "The rollout loop", "diagram": true}, {"id": "A", "label": "Species A and error band"}, {"id": "mass", "label": "Total mass"}];
+const PRESETS = [{"label": "Free, 2 percent", "values": {"eps": 2, "n": 60, "cons": 0}}, {"label": "Conserved", "values": {"eps": 2, "n": 60, "cons": 1}}, {"label": "Tiny error", "values": {"eps": 0.04, "n": 100, "cons": 0}}];
+const CHALLENGE = "Keep the mass drift below 1 percent for at least 100 steps with eps = 2 percent (or the largest eps that does it without conservation).";
+const CHALLENGE_SOLUTION = {"eps": 2, "n": 100, "cons": 1};
+const challengeTest = CHALLENGE ? (p) => (p.n >= 100 && (p.cons === 1 || Math.abs(p.eps) <= 0.04)) : null;
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const W = cv.width, H = cv.height, p = {};
+let graph = GRAPHS.length ? GRAPHS[0].id : "main";
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = v => (Math.abs(v) >= 1000 || (Math.abs(v) > 0 && Math.abs(v) < 0.01)) ? v.toExponential(2) : String(+v.toPrecision(4));
+function readout(html) {
+  document.getElementById("readout").innerHTML = html;
+  cv.setAttribute("aria-label", document.title + ". " + html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " "));  // screen readers get the numbers
+}
+let lastOk = null;
+// ---- plotting helpers: every graph gets labelled axes with units ----
+function niceTicks(lo, hi, n) {
+  const raw = (hi - lo) / n, mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag;
+  const step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag, out = [];
+  for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9; v += step) out.push(+v.toPrecision(12));
+  return out;
+}
+function axes(o, C) {
+  const L = 66, R = 16, T = 34, B = 50, w = W - L - R, h = H - T - B;
+  const X = v => L + (v - o.x[0]) / (o.x[1] - o.x[0]) * w, Y = v => T + h - (v - o.y[0]) / (o.y[1] - o.y[0]) * h;
+  ctx.lineWidth = 1; ctx.font = "12px system-ui";
+  for (const xv of niceTicks(o.x[0], o.x[1], 6)) {
+    ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(X(xv), T); ctx.lineTo(X(xv), T + h); ctx.stroke();
+    ctx.fillStyle = C.muted; ctx.textAlign = "center"; ctx.fillText(fmt(xv), X(xv), T + h + 16);
+  }
+  for (const yv of niceTicks(o.y[0], o.y[1], 5)) {
+    ctx.strokeStyle = C.line; ctx.beginPath(); ctx.moveTo(L, Y(yv)); ctx.lineTo(L + w, Y(yv)); ctx.stroke();
+    ctx.fillStyle = C.muted; ctx.textAlign = "right"; ctx.fillText(fmt(yv), L - 6, Y(yv) + 4);
+  }
+  ctx.strokeStyle = C.fg; ctx.beginPath(); ctx.moveTo(L, T); ctx.lineTo(L, T + h); ctx.lineTo(L + w, T + h); ctx.stroke();
+  ctx.fillStyle = C.fg; ctx.textAlign = "center"; ctx.font = "13px system-ui";
+  ctx.fillText(o.xl, L + w / 2, H - 8);
+  ctx.save(); ctx.translate(14, T + h / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(o.yl, 0, 0); ctx.restore();
+  ctx.font = "bold 13px system-ui"; ctx.fillText(o.title || "", L + w / 2, 20);
+  return { X, Y, L, T, w, h };
+}
+function curve(f, a, color, x0, x1, n) {
+  n = n || 160; ctx.save(); ctx.beginPath(); ctx.rect(a.L, a.T, a.w, a.h); ctx.clip();   // never draw outside the plot area
+  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.beginPath();
+  for (let i = 0; i <= n; i++) { const x = x0 + (x1 - x0) * i / n, y = f(x); i ? ctx.lineTo(a.X(x), a.Y(y)) : ctx.moveTo(a.X(x), a.Y(y)); }
+  ctx.stroke(); ctx.restore();
+}
+function dot(a, x, y, color, label) {
+  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(a.X(x), a.Y(y), 6, 0, 2 * Math.PI); ctx.fill();
+  if (label) { ctx.textAlign = "left"; ctx.font = "12px system-ui"; ctx.fillText(label, a.X(x) + 9, a.Y(y) - 8); }
+}
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  const C = { fg: css("--fg"), muted: css("--muted"), accent: css("--accent"), line: css("--line"), good: css("--good"), bad: css("--bad") };
+  
+const a = 0.95, e = p.eps / 100, q = a * (1 + e), n = Math.round(p.n), cons = Math.round(p.cons) === 1;
+const At = [1], As = [1], tot = [1]; let B = 0;
+for (let j = 0; j < 200; j++) { B += (1 - a) * (1 + e) * As[j]; At.push(At[j] * a); As.push(As[j] * q); tot.push(cons ? 1 : As[j + 1] + B); }
+let hi = 1.2, lo = 0.8; for (let j = 0; j <= n; j++) { hi = Math.max(hi, tot[j]); lo = Math.min(lo, tot[j]); }
+if (graph === "loop") {
+  const box = (x, y, w, t) => { ctx.strokeStyle = C.fg; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, 60); ctx.fillStyle = C.fg; ctx.font = "14px system-ui"; ctx.textAlign = "center"; ctx.fillText(t, x + w / 2, y + 36); };
+  const arrow = (x0, y0, x1, y1, col) => { ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.lineTo(x1 - 9, y1 - 5); ctx.moveTo(x1, y1); ctx.lineTo(x1 - 9, y1 + 5); ctx.stroke(); };
+  box(40, 120, 150, "state at step j"); box(300, 120, 150, "neural network"); box(550, 120, 130, "state j + 1");
+  arrow(190, 150, 300, 150, C.fg); arrow(450, 150, 550, 150, C.fg);
+  ctx.strokeStyle = C.bad; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(615, 180); ctx.lineTo(615, 270); ctx.lineTo(115, 270); ctx.lineTo(115, 182); ctx.lineTo(110, 192); ctx.moveTo(115, 182); ctx.lineTo(120, 192); ctx.stroke();
+  ctx.fillStyle = C.bad; ctx.font = "13px system-ui"; ctx.textAlign = "center"; ctx.fillText("rollout: the output is fed back in, so each step's error is repeated", 365, 295);
+  ctx.fillStyle = C.muted; ctx.font = "12px system-ui"; ctx.textAlign = "left"; ctx.fillText("Toy: A turns into B with exact factor 0.95 per step; the network's factor is off by " + fmt(p.eps) + " percent.", 20, H - 12);
+} else if (graph === "A") {
+  const A = axes({ x: [0, 200], y: [0, 1.05], xl: "rollout step", yl: "species A (fraction)", title: "Rollout: true A and surrogate A" }, C);
+  ctx.fillStyle = C.accent; ctx.globalAlpha = 0.25; ctx.beginPath(); for (let j = 0; j <= n; j++) { const x = A.X(j), y = A.Y(Math.min(1.05, As[j])); j ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } for (let j = n; j >= 0; j--) ctx.lineTo(A.X(j), A.Y(At[j])); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+  curve(j => Math.pow(a, j), A, C.muted, 0, n, 200); curve(j => Math.min(1.05, Math.pow(q, j)), A, C.accent, 0, n, 200);
+  ctx.font = "12px system-ui"; ctx.textAlign = "left"; ctx.fillStyle = C.muted; ctx.fillText("grey: true A = 0.95^j", A.L + 10, A.T + 16); ctx.fillStyle = C.accent; ctx.fillText("blue: surrogate A; shaded band = error", A.L + 10, A.T + 32);
+} else {
+  const A = axes({ x: [0, 200], y: [Math.floor(lo * 10) / 10 - 0.1, Math.ceil(hi * 10) / 10 + 0.1], xl: "rollout step", yl: "total mass A + B (fraction)", title: cons ? "Conserved output: total stays 1" : "Free output: total mass drifts" }, C);
+  curve(() => 1, A, C.muted, 0, 200, 2); curve(j => tot[Math.min(200, Math.max(0, Math.round(j)))], A, cons ? C.good : C.bad, 0, n, 200);
+  ctx.font = "12px system-ui"; ctx.textAlign = "left"; ctx.fillStyle = C.muted; ctx.fillText("grey line: exact total 1", A.L + 10, A.T + 16);
+}
+readout("after " + n + " steps: A true " + fmt(At[n]) + ", surrogate " + fmt(As[n]) + " (error " + fmt(Math.abs(As[n] - At[n])) + ") &nbsp; total mass " + fmt(tot[n]) + ", drift " + fmt(tot[n] - 1) + (cons ? " (conserved output)" : " (free output)"));
+
+  const ch = document.getElementById("challenge");
+  if (challengeTest) { const ok = !!challengeTest(p); ch.hidden = false; ch.dataset.ok = String(ok);
+    ch.innerHTML = "<b>Challenge:</b> " + CHALLENGE + " &nbsp; " + (ok ? "<b>Done!</b>" : "Not yet.");
+    if (ok !== lastOk) { document.getElementById("status").textContent = ok ? "Challenge done." : "Challenge not yet done."; lastOk = ok; } }
+}
+const box = document.getElementById("controls");
+const inputs = {};
+for (const q of PARAMS) {
+  p[q.id] = q.value;
+  const row = document.createElement("div"); row.className = "row";
+  row.innerHTML = `<label for="${q.id}">${q.label} (${q.unit || "no unit"})</label>` +
+    `<input id="${q.id}" type="range" min="${q.min}" max="${q.max}" step="${q.step}" value="${q.value}">` +
+    `<output for="${q.id}">${q.value}</output>`;
+  const inp = row.querySelector("input"), out = row.querySelector("output");
+  inputs[q.id] = [inp, out];
+  inp.addEventListener("input", () => { p[q.id] = +inp.value; out.textContent = inp.value; draw(); });
+  box.appendChild(row);
+}
+function setAll(vals) { for (const k in vals) { p[k] = vals[k]; if (inputs[k]) { inputs[k][0].value = vals[k]; inputs[k][1].textContent = vals[k]; } } draw(); }
+const DEFAULTS = Object.assign({}, p);
+document.getElementById("reset").addEventListener("click", () => setAll(DEFAULTS));
+for (const g of GRAPHS) {
+  const b = document.createElement("button"); b.type = "button"; b.textContent = g.label;
+  b.setAttribute("aria-pressed", String(g.id === graph));
+  b.addEventListener("click", () => { graph = g.id; for (const x of document.querySelectorAll("#graphs button")) x.setAttribute("aria-pressed", String(x === b)); draw(); });
+  document.getElementById("graphs").appendChild(b);
+}
+for (const pr of PRESETS) {
+  const b = document.createElement("button"); b.type = "button"; b.textContent = pr.label;
+  b.addEventListener("click", () => setAll(pr.values));
+  document.getElementById("presets").appendChild(b);
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+draw();
+</script>
+</body>
+</html>

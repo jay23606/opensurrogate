@@ -1,0 +1,21 @@
+name: Propose a new session
+description: Suggest Session 4 or later on the roadmap
+labels: ["feature", "intermediate"]
+body:
+  - type: input
+    id: title
+    attributes:
+      label: Session title
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: The one idea it teaches
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Your approach
+      description: How will you teach it and what will the learner build?

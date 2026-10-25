@@ -1,0 +1,23 @@
+name: Bug report
+description: Something in a session, app or test does not work
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Paste the exact error message.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. python sessions/session-01/lesson.py\n2. ..."
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Your system
+      placeholder: Windows 11, Python 3.12

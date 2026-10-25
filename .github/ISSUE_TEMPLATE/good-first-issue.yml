@@ -1,0 +1,41 @@
+name: Task (maintainer template)
+description: A well-scoped task a newcomer can pick up
+labels: ["good first issue", "beginner"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What is missing or wrong? One short paragraph.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and motivation
+      description: Why does this matter for learners or for the Target?
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected outcome
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Relevant files
+      placeholder: sessions/session-01/lesson.py
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Acceptance criteria
+      placeholder: "- [ ] python start.py test passes\n- [ ] ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: difficulty
+    attributes:
+      label: Difficulty
+      options: [beginner, intermediate, advanced]
+    validations:
+      required: true
